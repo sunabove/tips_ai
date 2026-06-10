@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 try:
@@ -96,6 +97,13 @@ def main() -> None:
 	print("Training complete.")
 	if getattr(results, "save_dir", None):
 		print(f"Artifacts: {results.save_dir}")
+		best_weights = Path(results.save_dir) / "weights" / "best.pt"
+		if best_weights.exists():
+			args.model.parent.mkdir(parents=True, exist_ok=True)
+			shutil.copy2(best_weights, args.model)
+			print(f"Updated model checkpoint: {args.model}")
+		else:
+			print(f"best.pt not found, skipping model update: {best_weights}")
 
 
 if __name__ == "__main__":
