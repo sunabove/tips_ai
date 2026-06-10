@@ -79,7 +79,7 @@ def parse_colormap(
 	return specs
 
 
-# Resolve frame/annotation/colormap roots from full or sample RUGD layouts.
+# Resolve frame/annotation/colormap roots from the standard RUGD layout.
 def find_roots(rugd_root: Path) -> tuple[Path, Path, Path]:
 	frame_root = rugd_root / "RUGD_01_frames"
 	ann_root = rugd_root / "RUGD_02_annotations"
@@ -88,17 +88,9 @@ def find_roots(rugd_root: Path) -> tuple[Path, Path, Path]:
 	if frame_root.exists() and ann_root.exists() and colormap.exists():
 		return frame_root, ann_root, colormap
 
-	sample_frame_root = rugd_root / "RUGD_03_sample-data" / "images"
-	sample_ann_root = rugd_root / "RUGD_03_sample-data" / "annotations"
-	sample_colormap = rugd_root / "RUGD_03_sample-data" / "RUGD_annotation-colormap.txt"
-
-	if sample_frame_root.exists() and sample_ann_root.exists() and sample_colormap.exists():
-		return sample_frame_root, sample_ann_root, sample_colormap
-
 	raise FileNotFoundError(
-		"RUGD root structure not found. Expected either '\n"
-		"- RUGD_01_frames + RUGD_02_annotations + colormap, or '\n"
-		"- RUGD_03_sample-data/images + annotations + colormap"
+		"RUGD root structure not found. Expected '\n"
+		"- RUGD_01_frames + RUGD_02_annotations + colormap"
 	)
 
 
