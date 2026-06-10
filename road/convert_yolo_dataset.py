@@ -34,6 +34,12 @@ ROAD_SURFACE_CLASSES = (
 )
 
 
+def default_rugd_root() -> Path:
+	primary = Path("road/dataset/RUGD")
+	fallback = Path("dataset/RUGD")
+	return primary if primary.exists() else fallback
+
+
 # Read colormap file and map selected classes to contiguous YOLO class IDs.
 def parse_colormap(
 	colormap_path: Path,
@@ -305,7 +311,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--rugd-root",
 		type=Path,
-		default=Path("road/dataset/RUGD"),
+		default=default_rugd_root(),
 		help="Path to RUGD root folder.",
 	)
 	parser.add_argument(
