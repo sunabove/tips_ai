@@ -1,3 +1,7 @@
+# Manual run:
+# 1. cd ai\road
+# 2. python convert_yolo_dataset.py
+
 from __future__ import annotations
 
 import argparse
