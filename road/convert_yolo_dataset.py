@@ -242,6 +242,7 @@ def safe_stem_for_nested_path(rel_path: Path) -> str:
 # Remove previous conversion output so each run starts from a clean state.
 def clear_output_root(output_root: Path) -> None:
 	if output_root.exists():
+		print(f"Existing output found. Removing: {output_root}")
 		if output_root.is_dir():
 			shutil.rmtree(output_root)
 		else:
@@ -268,8 +269,14 @@ def convert(
 
 	clear_output_root(output_root)
 	ensure_dirs(output_root, split_map.keys())
+	total_items = sum(len(v) for v in split_map.values())
+	processed_items = 0
 
 	for split, items in split_map.items():
+		split_total = len(items)
+		print(f"Starting split '{split}' ({split_total} files)...")
+		split_processed = 0
+
 		for frame_path, ann_path in items:
 			rel = ann_path.relative_to(ann_root)
 			file_id = safe_stem_for_nested_path(rel)
@@ -285,6 +292,20 @@ def convert(
 				epsilon_ratio=epsilon_ratio,
 			)
 			lbl_dst.write_text("\n".join(label_lines), encoding="utf-8")
+
+			processed_items += 1
+			split_processed += 1
+			overall_pct = (processed_items / total_items * 100.0) if total_items else 100.0
+			split_pct = (split_processed / split_total * 100.0) if split_total else 100.0
+			print(
+				f"[{processed_items}/{total_items}] {overall_pct:6.2f}% | "
+				f"{split}: {split_processed}/{split_total} ({split_pct:6.2f}%)",
+				end="\r",
+				flush=True,
+			)
+
+		if split_total > 0:
+			print()
 
 	write_dataset_yaml(output_root, classes)
 
