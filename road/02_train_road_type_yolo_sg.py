@@ -19,8 +19,8 @@ def default_dataset_yaml() -> Path:
 
 
 def default_model_path() -> Path:
-	primary = Path("road/model/yolo11m-road-seg.pt")
-	fallback = Path("model/yolo11m-road-seg.pt")
+	primary = Path("road/model/yolo11m-road-type-sg.pt")
+	fallback = Path("model/yolo11m-road-type-sg.pt")
 	return primary if primary.exists() else fallback
 
 
