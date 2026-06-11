@@ -16,7 +16,7 @@ def default_model_source() -> str:
 
 
 def default_output_model_path() -> Path:
-	return Path("road/model/yolo11m-pothole-sg.pt")
+	return Path("road/model/03_yolo11m-pothole-sg.pt")
 
 
 def parse_args() -> argparse.Namespace:
