@@ -17,6 +17,14 @@ datasets/
 
 runs/
 
+*.mp4
+*.avi
+*.mkv
+*.mp3
+*.wav
+*.mjpg
+*.webm
+
 # C extensions
 *.so
 
