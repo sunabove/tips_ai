@@ -7,6 +7,7 @@
 # segmentation 폴리곤은 model/01_yolo11m-road-sg.pt에서 학습된 모델을 이용하여 도로 영역을 추출합니다.
 # 도로 영역 추출시에는 하나의 클래스 road가 추출됩니다.
 # 추출한 도로 영역을 입력 파일명에 있는 {class_name}으로 고정하여 새롭게 라벨링하여 YOLO segmentation 형식으로 변환합니다.
+# 매핑할 클래스명들은 입력 파일명들의 클래스로 제한하여 주세요.
 # 하나의 영역이 추출되면 모두 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
 # 2개 이상의 영역이 추출되면, 신뢰도 평균이상의 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
 
@@ -114,10 +115,21 @@ def class_name_to_id_map(classes: List[ClassSpec]) -> Dict[str, int]:
 
 
 def target_class_specs_from_colormap(
-    colormap: Dict[str, Tuple[int, int, int]]
+    colormap: Dict[str, Tuple[int, int, int]],
+    allowed_names: set[str],
 ) -> List[TargetClassSpec]:
-    """colormap 순서를 유지하여 target class id를 생성합니다."""
-    return [TargetClassSpec(target_id=i, name=name) for i, name in enumerate(colormap.keys())]
+    """입력 파일 클래스만 colormap 순서로 target class id를 생성합니다."""
+    names = [name for name in colormap.keys() if name in allowed_names]
+    return [TargetClassSpec(target_id=i, name=name) for i, name in enumerate(names)]
+
+
+def collect_input_class_names(videos: List[Path]) -> set[str]:
+    """입력 동영상 파일명에서 class_name 집합을 추출합니다."""
+    class_names: set[str] = set()
+    for video_path in videos:
+        stem = extract_video_stem(video_path)
+        class_names.add(extract_class_name_from_stem(stem))
+    return class_names
 
 
 def target_class_name_to_id_map(classes: List[TargetClassSpec]) -> Dict[str, int]:
@@ -394,13 +406,24 @@ def convert(
     model = YOLO(str(model_path))
     model_classes = class_specs_from_model(model)
     road_model_class_id = find_model_class_id_by_name(model, "road")
+    videos = collect_videos(cobot_root)
+    input_class_names = collect_input_class_names(videos)
+
     resolved_colormap_path = find_colormap_path(cobot_root, colormap_path)
     class_to_color = load_colormap(resolved_colormap_path)
-    target_classes = target_class_specs_from_colormap(class_to_color)
+
+    missing_in_colormap = sorted(input_class_names - set(class_to_color.keys()))
+    if missing_in_colormap:
+        raise KeyError(
+            "입력 파일 클래스가 colormap에 없습니다: "
+            f"{missing_in_colormap}"
+        )
+
+    target_classes = target_class_specs_from_colormap(class_to_color, input_class_names)
     target_class_to_id = target_class_name_to_id_map(target_classes)
-    videos = collect_videos(cobot_root)
 
     print(f"발견된 동영상: {len(videos)} 개")
+    print(f"입력 클래스: {sorted(input_class_names)}")
     print(f"모델 클래스: {[f'{c.yolo_id}:{c.name}' for c in model_classes]}")
     print(f"타깃 클래스: {[f'{c.target_id}:{c.name}' for c in target_classes]}")
     print(f"colormap 경로: {resolved_colormap_path}")
