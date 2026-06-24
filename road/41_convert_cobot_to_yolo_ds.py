@@ -5,6 +5,8 @@
 # 해당 프레임에서 검출된 객체의 마스크를 YOLO segmentation 형식으로 변환합니다.
 
 # segmentation 폴리곤은 model/01_yolo11m-road-sg.pt에서 학습된 모델을 이용하여 도로 영역을 추출합니다.
+# 추출된 도로 영역 마스크들을 cv2.connectedComponentsWithStats(mask)를 이용하여 연결된 영역별로 분리하고,
+# 전체 마스크 영역에서 10% 이상을 차지하는 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
 # 도로 영역 추출시에는 하나의 클래스 road가 추출됩니다.
 # 추출한 도로 영역을 입력 파일명에 있는 {class_name}으로 고정하여 새롭게 라벨링하여 YOLO segmentation 형식으로 변환합니다.
 # 매핑할 클래스명들은 입력 파일명들의 클래스로 제한하여 주세요.
@@ -21,6 +23,7 @@
 
 # road/dataset/cobot_01/colormap_road.txt 파일에 정의된 클래스명에 매핑된 색상을 이용하여,
 # 마스크된 이미지를 해당 변환 폴더에 생성합니다.
+# 마스크된 이미지의 배경색은 백색을 사용합니다.
 # 마스크 이미지의 파일명은 {class_name}_{index}_{frame_index}.png 형식으로 저장됩니다.
 
 # Manual run:
@@ -220,6 +223,40 @@ def ensure_dirs(output_root: Path, splits: Iterable[str]) -> None:
         (output_root / "masks" / split).mkdir(parents=True, exist_ok=True)
 
 
+def build_noisy_component_mask(
+    binary_mask: np.ndarray,
+    noisy_ratio: float = 0.10,
+) -> np.ndarray:
+    """연결 성분 분석으로 전체 면적의 noisy_ratio% 이하인 영역을 식별합니다.
+    
+    군더더기(노이즈)로 분류된 영역을 True로 반환합니다.
+    """
+    if binary_mask is None or binary_mask.size == 0:
+        return np.zeros_like(binary_mask, dtype=bool)
+
+    binary_mask_uint8 = (binary_mask.astype(np.uint8) * 255)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        binary_mask_uint8, connectivity=8
+    )
+    
+    if num_labels <= 1:
+        return np.zeros_like(binary_mask, dtype=bool)
+
+    total_area = int(np.sum(stats[1:, cv2.CC_STAT_AREA]))
+    if total_area <= 0:
+        return np.zeros_like(binary_mask, dtype=bool)
+
+    noisy_threshold = int(total_area * noisy_ratio)
+    noisy_mask = np.zeros_like(binary_mask, dtype=bool)
+
+    for label_idx in range(1, num_labels):
+        component_area = int(stats[label_idx, cv2.CC_STAT_AREA])
+        if component_area <= noisy_threshold:
+            noisy_mask = np.logical_or(noisy_mask, labels == label_idx)
+
+    return noisy_mask
+
+
 def polygon_from_binary_mask(
     binary_mask: np.ndarray,
     min_area: float,
@@ -260,12 +297,15 @@ def build_label_lines_from_model(
     min_area: float,
     conf_threshold: float,
     road_model_class_id: int | None,
+    noisy_ratio: float = 0.10,
 ) -> List[np.ndarray]:
     """YOLO 세그멘테이션 모델 추론 결과에서 유지할 폴리곤 목록을 반환합니다.
 
-    규칙:
-    - 1개 영역이면 모두 저장
-    - 2개 이상이면 평균 신뢰도 이상(conf >= mean(conf))만 저장
+    필터링 단계:
+    1. 클래스 필터링 - road 클래스만 유지
+    2. 신뢰도 필터링 - 2개 이상이면 평균 신뢰도 이상(conf >= mean(conf))만 유지
+    3. 연결 성분 분석 필터링 - 전체 마스크 면적의 noisy_ratio% 이상인 영역만 유지
+    4. 면적 필터링 - min_area 이상인 영역만 유지
     """
     h, w = frame_bgr.shape[:2]
     results = model.predict(source=frame_bgr, conf=conf_threshold, verbose=False)
@@ -293,6 +333,7 @@ def build_label_lines_from_model(
     confs = confs[:m]
     cls_ids = cls_ids[:m]
 
+    # Stage 1: 클래스 필터링 - road 클래스만 유지
     if road_model_class_id is not None:
         road_keep = cls_ids == road_model_class_id
         polygons_xy = [poly for poly, keep in zip(polygons_xy, road_keep) if bool(keep)]
@@ -301,6 +342,7 @@ def build_label_lines_from_model(
         if m == 0:
             return []
 
+    # Stage 2: 신뢰도 필터링 - 2개 이상이면 평균값 이상만 유지
     if m >= 2:
         mean_conf = float(np.mean(confs))
         keep_mask = confs >= mean_conf
@@ -316,13 +358,34 @@ def build_label_lines_from_model(
         if poly_xy is None or len(poly_xy) < 3:
             continue
 
-        area = cv2.contourArea(poly_xy.astype(np.float32))
+        # Stage 3: 연결 성분 분석으로 군더더기 제거
+        # 폴리곤을 이진 마스크로 변환
+        mask_temp = np.zeros((h, w), dtype=np.uint8)
+        pts_i32 = np.round(poly_xy).astype(np.int32)
+        if len(pts_i32) >= 3:
+            cv2.fillPoly(mask_temp, [pts_i32], 1)
+        
+        mask_binary = mask_temp.astype(bool)
+        noisy_mask = build_noisy_component_mask(mask_binary, noisy_ratio)
+        clean_mask = np.logical_and(mask_binary, ~noisy_mask)
+        
+        # Stage 4: 면적 필터링 - min_area 이상인 영역만 유지
+        area = int(np.count_nonzero(clean_mask))
         if area < min_area:
             continue
 
-        pts = poly_xy.astype(np.float32).copy()
-        if len(pts) >= 3:
-            kept_polygons.append(pts)
+        # 정제된 마스크에서 폴리곤 재추출
+        clean_mask_uint8 = (clean_mask.astype(np.uint8) * 255)
+        contours, _ = cv2.findContours(clean_mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        for contour in contours:
+            contour_area = cv2.contourArea(contour)
+            if contour_area < min_area:
+                continue
+            
+            pts = contour.reshape(-1, 2).astype(np.float32)
+            if len(pts) >= 3:
+                kept_polygons.append(pts)
 
     return kept_polygons
 
@@ -500,12 +563,14 @@ def convert(
                 cv2.imwrite(str(img_dst), frame_bgr)
 
                 # YOLO 세그멘테이션 모델 추론 결과에서 폴리곤 추출
+                # (연결 성분 분석으로 전체 면적의 10% 이상 영역만 유지)
                 polygons_xy = build_label_lines_from_model(
                     model=model,
                     frame_bgr=frame_bgr,
                     min_area=min_area,
                     conf_threshold=conf_threshold,
                     road_model_class_id=road_model_class_id,
+                    noisy_ratio=0.10,
                 )
 
                 # 추출된 모든 영역의 클래스는 입력 파일 클래스명으로 고정
