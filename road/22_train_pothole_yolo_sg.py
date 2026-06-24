@@ -5,18 +5,6 @@ import shutil
 from pathlib import Path
 from ultralytics import YOLO 
 
-def default_dataset_yaml() -> Path:
-	return prefer_primary_path("road/dataset/pothole600_yolo_seg/dataset.yaml")
-
-
-def default_model_source() -> str:
-	return "yolo11m-seg.yaml"
-
-
-def default_output_model_path() -> Path:
-	return Path("road/model/04_yolo11m-pothole-sg.pt")
-
-
 def prefer_primary_path(primary: str) -> Path:
 	primary_path = Path(primary)
 	if primary_path.exists():
@@ -27,6 +15,18 @@ def prefer_primary_path(primary: str) -> Path:
 		return Path(*parts[1:])
 
 	return primary_path
+
+
+def default_dataset_yaml() -> Path:
+	return prefer_primary_path("road/dataset/pothole600_yolo_seg/dataset.yaml")
+
+
+def default_model_source() -> str:
+	return "yolo11m-seg.yaml"
+
+
+def default_output_model_path() -> Path:
+	return Path("road/model/04_yolo11m-pothole-sg.pt")
 
 
 def parse_args() -> argparse.Namespace:

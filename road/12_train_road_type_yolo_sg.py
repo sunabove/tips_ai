@@ -12,14 +12,6 @@ except ImportError as exc:
 	) from exc
 
 
-def default_dataset_yaml() -> Path:
-	return prefer_primary_path("road/dataset/rugd_yolo_seg/dataset.yaml")
-
-
-def default_model_path() -> Path:
-	return prefer_primary_path("road/model/02_yolo11m-road-type-sg.pt")
-
-
 def prefer_primary_path(primary: str) -> Path:
 	primary_path = Path(primary)
 	if primary_path.exists():
@@ -30,6 +22,14 @@ def prefer_primary_path(primary: str) -> Path:
 		return Path(*parts[1:])
 
 	return primary_path
+
+
+def default_dataset_yaml() -> Path:
+	return prefer_primary_path("road/dataset/rugd_yolo_seg/dataset.yaml")
+
+
+def default_model_path() -> Path:
+	return prefer_primary_path("road/model/02_yolo11m-road-type-sg.pt")
 
 
 def parse_args() -> argparse.Namespace:
