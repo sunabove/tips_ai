@@ -39,22 +39,37 @@ class ClassSpec:
     rgb: Tuple[int, int, int]
 
 
+# 스크립트 파일이 위치한 디렉터리 (300_python/ai/road/)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+
+
 def default_cobot_root() -> Path:
-    primary = Path("road/dataset/cobot_01")
-    fallback = Path("dataset/cobot_01")
-    return primary if primary.exists() else fallback
+    """스크립트 기준 road/dataset/cobot_01 경로를 반환합니다."""
+    return _SCRIPT_DIR / "dataset" / "cobot_01"
+
+
+def default_output_root() -> Path:
+    """스크립트 기준 road/dataset/cobot_01_yolo_seg 경로를 반환합니다."""
+    return _SCRIPT_DIR / "dataset" / "cobot_01_yolo_seg"
 
 
 def default_colormap_path(cobot_root: Path) -> Path:
-    """colormap_road.txt를 cobot_01 폴더 또는 상위 경로에서 탐색."""
+    """colormap_road.txt를 다음 순서로 탐색합니다.
+
+    1. cobot_01 폴더 내부
+    2. road/dataset/ 폴더 (스크립트 기준)
+    3. 300_python/ 폴더 (스크립트 기준 3단계 상위)
+    """
     candidates = [
         cobot_root / "colormap_road.txt",
-        cobot_root.parent.parent / "colormap_road.txt",  # 300_python/
+        _SCRIPT_DIR / "dataset" / "colormap_road.txt",
+        _SCRIPT_DIR.parent.parent / "colormap_road.txt",  # 300_python/
     ]
     for p in candidates:
         if p.exists():
             return p
-    return cobot_root / "colormap_road.txt"
+    # 찾지 못한 경우 기본 위치 반환 (오류는 실행 시점에 발생)
+    return _SCRIPT_DIR.parent.parent / "colormap_road.txt"
 
 
 def parse_colormap(colormap_path: Path) -> List[ClassSpec]:
@@ -334,8 +349,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=Path("road/dataset/cobot_01_yolo_seg"),
-        help="출력 폴더 경로 (기본값: road/dataset/cobot_01_yolo_seg)",
+        default=default_output_root(),
+        help=f"출력 폴더 경로 (기본값: {default_output_root()})",
     )
     parser.add_argument(
         "--colormap",
