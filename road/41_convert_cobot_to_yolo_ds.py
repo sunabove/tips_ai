@@ -5,7 +5,8 @@
 # 해당 프레임에서 검출된 객체의 마스크를 YOLO segmentation 형식으로 변환합니다.
 
 # segmentation 폴리곤은 model/01_yolo11m-road-sg.pt에서 학습된 모델을 이용하여 도로 영역을 추출합니다.
-# 추출된 도로 영역의 클래스명은 입력 파일의 클래스명으로 매핑합니다.
+# 도로 영역 추출시에는 하나의 클래스 road가 추출됩니다.
+# 추출한 도로 영역을 입력 파일명에 있는 {class_name}으로 고정하여 새롭게 라벨링하여 YOLO segmentation 형식으로 변환합니다.
 # 하나의 영역이 추출되면 모두 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
 # 2개 이상의 영역이 추출되면, 신뢰도 평균이상의 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
 
@@ -42,6 +43,12 @@ from ultralytics import YOLO
 @dataclass(frozen=True)
 class ClassSpec:
     yolo_id: int
+    name: str
+
+
+@dataclass(frozen=True)
+class TargetClassSpec:
+    target_id: int
     name: str
 
 
@@ -104,6 +111,30 @@ def extract_class_name_from_stem(stem: str) -> str:
 
 def class_name_to_id_map(classes: List[ClassSpec]) -> Dict[str, int]:
     return {c.name: c.yolo_id for c in classes}
+
+
+def target_class_specs_from_colormap(
+    colormap: Dict[str, Tuple[int, int, int]]
+) -> List[TargetClassSpec]:
+    """colormap 순서를 유지하여 target class id를 생성합니다."""
+    return [TargetClassSpec(target_id=i, name=name) for i, name in enumerate(colormap.keys())]
+
+
+def target_class_name_to_id_map(classes: List[TargetClassSpec]) -> Dict[str, int]:
+    return {c.name: c.target_id for c in classes}
+
+
+def find_model_class_id_by_name(model: YOLO, class_name: str) -> int | None:
+    names = model.names
+    if isinstance(names, dict):
+        for k, v in names.items():
+            if str(v) == class_name:
+                return int(k)
+    elif isinstance(names, list):
+        for i, v in enumerate(names):
+            if str(v) == class_name:
+                return i
+    return None
 
 
 def find_colormap_path(cobot_root: Path, colormap_path: Path | None) -> Path:
@@ -216,6 +247,7 @@ def build_label_lines_from_model(
     frame_bgr: np.ndarray,
     min_area: float,
     conf_threshold: float,
+    road_model_class_id: int | None,
 ) -> List[np.ndarray]:
     """YOLO 세그멘테이션 모델 추론 결과에서 유지할 폴리곤 목록을 반환합니다.
 
@@ -237,14 +269,25 @@ def build_label_lines_from_model(
     if n == 0:
         return []
 
-    if result.boxes is not None and result.boxes.conf is not None:
+    if result.boxes is not None and result.boxes.conf is not None and result.boxes.cls is not None:
         confs = result.boxes.conf.detach().cpu().numpy().astype(np.float32)
+        cls_ids = result.boxes.cls.detach().cpu().numpy().astype(np.int32)
     else:
         confs = np.ones(n, dtype=np.float32)
+        cls_ids = np.zeros(n, dtype=np.int32)
 
-    m = min(n, len(confs))
+    m = min(n, len(confs), len(cls_ids))
     polygons_xy = polygons_xy[:m]
     confs = confs[:m]
+    cls_ids = cls_ids[:m]
+
+    if road_model_class_id is not None:
+        road_keep = cls_ids == road_model_class_id
+        polygons_xy = [poly for poly, keep in zip(polygons_xy, road_keep) if bool(keep)]
+        confs = confs[road_keep]
+        m = len(polygons_xy)
+        if m == 0:
+            return []
 
     if m >= 2:
         mean_conf = float(np.mean(confs))
@@ -349,15 +392,20 @@ def convert(
         raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {model_path}")
 
     model = YOLO(str(model_path))
-    classes = class_specs_from_model(model)
-    class_to_id = class_name_to_id_map(classes)
+    model_classes = class_specs_from_model(model)
+    road_model_class_id = find_model_class_id_by_name(model, "road")
     resolved_colormap_path = find_colormap_path(cobot_root, colormap_path)
     class_to_color = load_colormap(resolved_colormap_path)
+    target_classes = target_class_specs_from_colormap(class_to_color)
+    target_class_to_id = target_class_name_to_id_map(target_classes)
     videos = collect_videos(cobot_root)
 
     print(f"발견된 동영상: {len(videos)} 개")
-    print(f"클래스: {[f'{c.yolo_id}:{c.name}' for c in classes]}")
+    print(f"모델 클래스: {[f'{c.yolo_id}:{c.name}' for c in model_classes]}")
+    print(f"타깃 클래스: {[f'{c.target_id}:{c.name}' for c in target_classes]}")
     print(f"colormap 경로: {resolved_colormap_path}")
+    if road_model_class_id is None:
+        print("[경고] 모델에서 'road' 클래스를 찾지 못했습니다. 모든 예측 폴리곤을 사용합니다.")
 
     # 전체 (video_path, frame_index) 쌍 수집
     all_items: list[tuple[Path, int]] = []
@@ -395,12 +443,12 @@ def convert(
             for video_path, frame_idx in items:
                 stem = extract_video_stem(video_path)
                 input_class_name = extract_class_name_from_stem(stem)
-                if input_class_name not in class_to_id:
+                if input_class_name not in target_class_to_id:
                     raise KeyError(
-                        f"입력 클래스명 '{input_class_name}' 이(가) 모델 클래스에 없습니다: "
-                        f"{sorted(class_to_id.keys())}"
+                        f"입력 클래스명 '{input_class_name}' 이(가) 타깃 클래스(colormap)에 없습니다: "
+                        f"{sorted(target_class_to_id.keys())}"
                     )
-                input_class_id = class_to_id[input_class_name]
+                input_class_id = target_class_to_id[input_class_name]
 
                 if input_class_name not in class_to_color:
                     raise KeyError(
@@ -434,6 +482,7 @@ def convert(
                     frame_bgr=frame_bgr,
                     min_area=min_area,
                     conf_threshold=conf_threshold,
+                    road_model_class_id=road_model_class_id,
                 )
 
                 # 추출된 모든 영역의 클래스는 입력 파일 클래스명으로 고정
@@ -469,14 +518,17 @@ def convert(
             cap.release()
 
     print()
-    write_dataset_yaml(output_root, classes)
+    write_dataset_yaml(
+        output_root,
+        [ClassSpec(yolo_id=c.target_id, name=c.name) for c in target_classes],
+    )
 
     print("\n변환 완료.")
     print(f"입력 경로  : {cobot_root}")
     print(f"출력 경로  : {output_root}")
     print(f"모델 경로  : {model_path}")
     print(f"컬러맵 경로: {resolved_colormap_path}")
-    print(f"클래스 수  : {len(classes)}")
+    print(f"클래스 수  : {len(target_classes)}")
     print(f"총 프레임  : {processed}")
     print(
         f"분할 결과  -> "
