@@ -9,10 +9,20 @@ import cv2
 import numpy as np
 
 
+def prefer_primary_path(primary: str) -> Path:
+	primary_path = Path(primary)
+	if primary_path.exists():
+		return primary_path
+
+	parts = primary_path.parts
+	if len(parts) >= 2:
+		return Path(*parts[1:])
+
+	return primary_path
+
+
 def default_pothole_root() -> Path:
-	primary = Path("road/dataset/pothole600")
-	fallback = Path("dataset/pothole600")
-	return primary if primary.exists() else fallback
+	return prefer_primary_path("road/dataset/pothole600")
 
 
 def clear_output_root(output_root: Path) -> None:

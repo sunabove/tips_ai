@@ -34,10 +34,20 @@ ROAD_SURFACE_CLASSES = (
 )
 
 
+def prefer_primary_path(primary: str) -> Path:
+	primary_path = Path(primary)
+	if primary_path.exists():
+		return primary_path
+
+	parts = primary_path.parts
+	if len(parts) >= 2:
+		return Path(*parts[1:])
+
+	return primary_path
+
+
 def default_rugd_root() -> Path:
-	primary = Path("road/dataset/RUGD")
-	fallback = Path("dataset/RUGD")
-	return primary if primary.exists() else fallback
+	return prefer_primary_path("road/dataset/RUGD")
 
 
 # Read colormap file and map selected classes to contiguous YOLO class IDs.

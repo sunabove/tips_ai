@@ -13,15 +13,23 @@ except ImportError as exc:
 
 
 def default_dataset_yaml() -> Path:
-	primary = Path("road/dataset/rugd_yolo_seg/dataset.yaml")
-	fallback = Path("dataset/rugd_yolo_seg/dataset.yaml")
-	return primary if primary.exists() else fallback
+	return prefer_primary_path("road/dataset/rugd_yolo_seg/dataset.yaml")
 
 
 def default_model_path() -> Path:
-	primary = Path("road/model/02_yolo11m-road-type-sg.pt")
-	fallback = Path("model/02_yolo11m-road-type-sg.pt")
-	return primary if primary.exists() else fallback
+	return prefer_primary_path("road/model/02_yolo11m-road-type-sg.pt")
+
+
+def prefer_primary_path(primary: str) -> Path:
+	primary_path = Path(primary)
+	if primary_path.exists():
+		return primary_path
+
+	parts = primary_path.parts
+	if len(parts) >= 2:
+		return Path(*parts[1:])
+
+	return primary_path
 
 
 def parse_args() -> argparse.Namespace:
