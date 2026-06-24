@@ -3,6 +3,11 @@
 # 변환 폴더는 road/dataset/cobot_01_yolo_seg/ 입니다.
 # 변환 과정에서 동영상의 모든 프레임을 추출하여 이미지로 저장하고,
 # 해당 프레임에서 검출된 객체의 마스크를 YOLO segmentation 형식으로 변환합니다.
+
+# segmentaion 폴리곤은 model/01_yelo11m-road-sg.pt에서 학습된 모델을 이용하여 추출합니다.
+# 하나의 영역이 추출되면 모두 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
+# 2개 이상의 영역이 추출되면, 신뢰도 평균이상의 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
+
 # 변환 과정에서 사용되는 YOLO segmentation dataset 형식은 다음과 같습니다.
 # road/dataset/cobot_01/colormap_road.txt 파일에 정의된 클래스명에 매핑된 색상을 이용하여,
 # 마스크된 이미지를 변환 폴더에 생성합니다.
@@ -22,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import random
-import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,13 +34,13 @@ from typing import Dict, Iterable, List, Tuple
 
 import cv2
 import numpy as np
+from ultralytics import YOLO
 
 
 @dataclass(frozen=True)
 class ClassSpec:
     yolo_id: int
     name: str
-    rgb: Tuple[int, int, int]
 
 
 # 스크립트 파일이 위치한 디렉터리 (300_python/ai/road/)
@@ -53,57 +57,19 @@ def default_output_root() -> Path:
     return _SCRIPT_DIR / "dataset" / "cobot_01_yolo_seg"
 
 
-def default_colormap_path(cobot_root: Path) -> Path:
-    """colormap_road.txt를 다음 순서로 탐색합니다.
-
-    1. cobot_01 폴더 내부
-    2. road/dataset/ 폴더 (스크립트 기준)
-    3. 300_python/ 폴더 (스크립트 기준 3단계 상위)
-    """
-    candidates = [
-        cobot_root / "colormap_road.txt",
-        _SCRIPT_DIR / "dataset" / "colormap_road.txt",
-        _SCRIPT_DIR.parent.parent / "colormap_road.txt",  # 300_python/
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    # 찾지 못한 경우 기본 위치 반환 (오류는 실행 시점에 발생)
-    return _SCRIPT_DIR.parent.parent / "colormap_road.txt"
+def default_model_path() -> Path:
+    """스크립트 기준 모델 경로를 반환합니다."""
+    return _SCRIPT_DIR / "model" / "01_yelo11m-road-sg.pt"
 
 
-def parse_colormap(colormap_path: Path) -> List[ClassSpec]:
-    """colormap_road.txt를 파싱하여 ClassSpec 목록을 반환합니다.
-
-    파일 형식 (공백 구분):
-        {name} {R} {G} {B}
-    예시:
-        void 0 0 0
-        road 255 0 0
-    'void' 항목은 배경으로 간주하여 제외합니다.
-    """
-    specs: list[ClassSpec] = []
-    yolo_id = 0
-    with colormap_path.open("r", encoding="utf-8") as f:
-        for raw_line in f:
-            line = raw_line.strip()
-            if not line:
-                continue
-            parts = line.split()
-            if len(parts) < 4:
-                continue
-            name = parts[0].lower()
-            if name == "void":
-                continue
-            try:
-                r, g, b = int(parts[1]), int(parts[2]), int(parts[3])
-            except ValueError:
-                continue
-            specs.append(ClassSpec(yolo_id=yolo_id, name=name, rgb=(r, g, b)))
-            yolo_id += 1
-    if not specs:
-        raise ValueError(f"colormap 파일에서 유효한 클래스를 찾을 수 없습니다: {colormap_path}")
-    return specs
+def class_specs_from_model(model: YOLO) -> List[ClassSpec]:
+    names = model.names
+    if isinstance(names, dict):
+        ordered = sorted(names.items(), key=lambda x: int(x[0]))
+        return [ClassSpec(yolo_id=int(k), name=str(v)) for k, v in ordered]
+    if isinstance(names, list):
+        return [ClassSpec(yolo_id=i, name=str(v)) for i, v in enumerate(names)]
+    raise ValueError("모델 클래스 정보를 읽을 수 없습니다.")
 
 
 def collect_videos(cobot_root: Path) -> List[Path]:
@@ -185,26 +151,73 @@ def polygon_from_binary_mask(
     return polygons
 
 
-def build_label_lines(
-    frame_rgb: np.ndarray,
-    classes: List[ClassSpec],
+def build_label_lines_from_model(
+    model: YOLO,
+    frame_bgr: np.ndarray,
     min_area: float,
-    epsilon_ratio: float,
+    conf_threshold: float,
 ) -> List[str]:
-    """마스크 프레임(RGB) 에서 YOLO segmentation 라벨 라인 목록을 생성합니다."""
-    h, w = frame_rgb.shape[:2]
+    """YOLO 세그멘테이션 모델 추론 결과를 YOLO segmentation 라벨 라인으로 변환합니다.
+
+    규칙:
+    - 1개 영역이면 모두 저장
+    - 2개 이상이면 평균 신뢰도 이상(conf >= mean(conf))만 저장
+    """
+    h, w = frame_bgr.shape[:2]
+    results = model.predict(source=frame_bgr, conf=conf_threshold, verbose=False)
+    if not results:
+        return []
+
+    result = results[0]
+    if result.masks is None or result.masks.xy is None:
+        return []
+
+    polygons_xy = result.masks.xy
+    n = len(polygons_xy)
+    if n == 0:
+        return []
+
+    if result.boxes is not None and result.boxes.conf is not None and result.boxes.cls is not None:
+        confs = result.boxes.conf.detach().cpu().numpy().astype(np.float32)
+        cls_ids = result.boxes.cls.detach().cpu().numpy().astype(np.int32)
+    else:
+        confs = np.ones(n, dtype=np.float32)
+        cls_ids = np.zeros(n, dtype=np.int32)
+
+    m = min(n, len(confs), len(cls_ids))
+    polygons_xy = polygons_xy[:m]
+    confs = confs[:m]
+    cls_ids = cls_ids[:m]
+
+    if m >= 2:
+        mean_conf = float(np.mean(confs))
+        keep_mask = confs >= mean_conf
+    else:
+        keep_mask = np.ones(m, dtype=bool)
+
     lines: list[str] = []
 
-    for cls in classes:
-        color = np.array(cls.rgb, dtype=np.uint8)
-        binary = cv2.inRange(frame_rgb, color, color)
-        if not np.any(binary):
+    for i, poly_xy in enumerate(polygons_xy):
+        if not bool(keep_mask[i]):
             continue
 
-        polygons = polygon_from_binary_mask(binary, min_area, epsilon_ratio, w, h)
-        for poly in polygons:
-            coord_text = " ".join(f"{x:.6f}" for x in poly)
-            lines.append(f"{cls.yolo_id} {coord_text}")
+        if poly_xy is None or len(poly_xy) < 3:
+            continue
+
+        area = cv2.contourArea(poly_xy.astype(np.float32))
+        if area < min_area:
+            continue
+
+        pts = poly_xy.astype(np.float32).copy()
+        pts[:, 0] = np.clip(pts[:, 0] / w, 0.0, 1.0)
+        pts[:, 1] = np.clip(pts[:, 1] / h, 0.0, 1.0)
+
+        flat = pts.flatten().tolist()
+        if len(flat) < 6:
+            continue
+
+        coord_text = " ".join(f"{x:.6f}" for x in flat)
+        lines.append(f"{int(cls_ids[i])} {coord_text}")
 
     return lines
 
@@ -231,15 +244,19 @@ def clear_output_root(output_root: Path) -> None:
 def convert(
     cobot_root: Path,
     output_root: Path,
-    colormap_path: Path,
+    model_path: Path,
     train_ratio: float,
     val_ratio: float,
     seed: int,
     min_area: float,
-    epsilon_ratio: float,
+    conf_threshold: float,
     frame_step: int,
 ) -> None:
-    classes = parse_colormap(colormap_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {model_path}")
+
+    model = YOLO(str(model_path))
+    classes = class_specs_from_model(model)
     videos = collect_videos(cobot_root)
 
     print(f"발견된 동영상: {len(videos)} 개")
@@ -299,9 +316,13 @@ def convert(
                 # 마스크 프레임을 이미지로 저장
                 cv2.imwrite(str(img_dst), frame_bgr)
 
-                # RGB 변환 후 YOLO 라벨 생성
-                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                label_lines = build_label_lines(frame_rgb, classes, min_area, epsilon_ratio)
+                # YOLO 세그멘테이션 모델 추론 결과를 라벨로 저장
+                label_lines = build_label_lines_from_model(
+                    model=model,
+                    frame_bgr=frame_bgr,
+                    min_area=min_area,
+                    conf_threshold=conf_threshold,
+                )
                 lbl_dst.write_text("\n".join(label_lines), encoding="utf-8")
 
                 processed += 1
@@ -324,7 +345,7 @@ def convert(
     print("\n변환 완료.")
     print(f"입력 경로  : {cobot_root}")
     print(f"출력 경로  : {output_root}")
-    print(f"colormap   : {colormap_path}")
+    print(f"모델 경로  : {model_path}")
     print(f"클래스 수  : {len(classes)}")
     print(f"총 프레임  : {processed}")
     print(
@@ -353,10 +374,10 @@ def parse_args() -> argparse.Namespace:
         help=f"출력 폴더 경로 (기본값: {default_output_root()})",
     )
     parser.add_argument(
-        "--colormap",
+        "--model",
         type=Path,
-        default=None,
-        help="colormap_road.txt 경로 (미지정 시 자동 탐색)",
+        default=default_model_path(),
+        help=f"세그멘테이션 모델 경로 (기본값: {default_model_path()})",
     )
     parser.add_argument("--train-ratio", type=float, default=0.8, help="학습 데이터 비율 (기본값: 0.8)")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="검증 데이터 비율 (기본값: 0.1)")
@@ -368,10 +389,10 @@ def parse_args() -> argparse.Namespace:
         help="폴리곤 최소 픽셀 면적 (기본값: 20.0)",
     )
     parser.add_argument(
-        "--epsilon-ratio",
+        "--conf-threshold",
         type=float,
-        default=0.01,
-        help="윤곽선 근사 epsilon 비율 (기본값: 0.01)",
+        default=0.001,
+        help="모델 추론 최소 신뢰도 (기본값: 0.001)",
     )
     parser.add_argument(
         "--frame-step",
@@ -384,15 +405,14 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    colormap = args.colormap if args.colormap else default_colormap_path(args.cobot_root)
     convert(
         cobot_root=args.cobot_root,
         output_root=args.output_root,
-        colormap_path=colormap,
+        model_path=args.model,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         seed=args.seed,
         min_area=args.min_area,
-        epsilon_ratio=args.epsilon_ratio,
+        conf_threshold=args.conf_threshold,
         frame_step=args.frame_step,
     )
