@@ -417,9 +417,9 @@ def render_colored_mask_image(
     polygons_xy: List[np.ndarray],
     rgb_color: Tuple[int, int, int],
 ) -> np.ndarray:
-    """선택된 폴리곤을 단일 클래스 색상으로 채운 마스크(BGR)를 생성합니다."""
+    """선택된 폴리곤을 단일 클래스 색상으로 채운 마스크(BGR)를 생성합니다. 배경은 백색입니다."""
     h, w = image_shape
-    mask_bgr = np.zeros((h, w, 3), dtype=np.uint8)
+    mask_bgr = np.full((h, w, 3), 255, dtype=np.uint8)
     if not polygons_xy:
         return mask_bgr
 
