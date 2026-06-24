@@ -5,8 +5,11 @@
 # 해당 프레임에서 검출된 객체의 마스크를 YOLO segmentation 형식으로 변환합니다.
 
 # segmentation 폴리곤은 model/01_yolo11m-road-sg.pt에서 학습된 모델을 이용하여 도로 영역을 추출합니다.
-# 추출된 도로 영역 마스크들을 cv2.connectedComponentsWithStats(mask)를 이용하여 연결된 영역별로 분리하고,
-# 전체 마스크 영역에서 10% 이상을 차지하는 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
+# 추출된 도로 영역 마스크들을 다음 두 단계로 필터링합니다:
+# 1. cv2.connectedComponentsWithStats(mask)를 이용하여 전체 마스크 영역에서 10% 미만을 차지하는 연결된 영역(노이즈)은 제거합니다.
+# 2. cv2.distanceTransform(mask, cv2.DIST_L2, 5)를 이용하여 거리가 1.5 이하인 가느다란 실 같은 부분을 제거합니다.
+# 필터링된 도로 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
+
 # 도로 영역 추출시에는 하나의 클래스 road가 추출됩니다.
 # 추출한 도로 영역을 입력 파일명에 있는 {class_name}으로 고정하여 새롭게 라벨링하여 YOLO segmentation 형식으로 변환합니다.
 # 매핑할 클래스명들은 입력 파일명들의 클래스로 제한하여 주세요.
@@ -257,6 +260,41 @@ def build_noisy_component_mask(
     return noisy_mask
 
 
+def remove_thin_lines(
+    binary_mask: np.ndarray,
+    distance_threshold: float | None = None,
+    distance_ratio: float = 0.005,
+) -> np.ndarray:
+    """cv2.distanceTransform을 이용하여 가느다란 선들을 제거합니다.
+    
+    거리 변환으로 각 픽셀의 가장 가까운 배경까지의 거리를 계산하고,
+    거리가 distance_threshold 이상인 영역만 유지합니다 (가느다란 부분 제거).
+    
+    distance_threshold가 None이면 이미지 크기에 따라 동적으로 계산되며, 최소 5로 설정됩니다:
+    - distance_threshold = max(5, sqrt(h^2 + w^2) * distance_ratio)
+    \n    예시:
+    - 480x360 이미지: max(5, sqrt(172800) * 0.005) = 5.0 (최소값)
+    - 1920x1440 이미지: max(5, sqrt(2764800) * 0.005) ≈ 8.3
+    """
+    if binary_mask is None or binary_mask.size == 0 or not np.any(binary_mask):
+        return binary_mask.astype(bool)
+
+    binary_mask_uint8 = (binary_mask.astype(np.uint8) * 255)
+    dist = cv2.distanceTransform(binary_mask_uint8, cv2.DIST_L2, 5)
+    
+    # 동적 임계치 계산 (최소값 5 보장)
+    if distance_threshold is None:
+        h, w = binary_mask.shape[:2]
+        # 이미지 대각선 길이 기반: max(5, sqrt(h^2 + w^2) * ratio)
+        diagonal = np.sqrt(h**2 + w**2)
+        distance_threshold = max(5.0, diagonal * distance_ratio)
+    
+    # 거리가 distance_threshold 이상인 부분만 유지
+    _, thick_mask = cv2.threshold(dist, distance_threshold, 255, cv2.THRESH_BINARY)
+    
+    return thick_mask.astype(bool)
+
+
 def polygon_from_binary_mask(
     binary_mask: np.ndarray,
     min_area: float,
@@ -358,7 +396,7 @@ def build_label_lines_from_model(
         if poly_xy is None or len(poly_xy) < 3:
             continue
 
-        # Stage 3: 연결 성분 분석으로 군더더기 제거
+        # Stage 3: 연결 성분 분석과 거리 변환으로 군더더기 및 가느다란 선 제거
         # 폴리곤을 이진 마스크로 변환
         mask_temp = np.zeros((h, w), dtype=np.uint8)
         pts_i32 = np.round(poly_xy).astype(np.int32)
@@ -366,8 +404,11 @@ def build_label_lines_from_model(
             cv2.fillPoly(mask_temp, [pts_i32], 1)
         
         mask_binary = mask_temp.astype(bool)
+        # Step 3.1: 10% 미만 영역(연결 성분 분석) 제거
         noisy_mask = build_noisy_component_mask(mask_binary, noisy_ratio)
-        clean_mask = np.logical_and(mask_binary, ~noisy_mask)
+        mask_after_noisy = np.logical_and(mask_binary, ~noisy_mask)
+        # Step 3.2: 거리 변환으로 가느다란 선 제거 (이미지 크기에 따라 동적 임계치 적용)
+        clean_mask = remove_thin_lines(mask_after_noisy, distance_threshold=None, distance_ratio=0.003)
         
         # Stage 4: 면적 필터링 - min_area 이상인 영역만 유지
         area = int(np.count_nonzero(clean_mask))
