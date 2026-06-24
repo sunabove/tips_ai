@@ -29,7 +29,11 @@ def default_dataset_yaml() -> Path:
 	return prefer_primary_path("road/dataset/cobot_01_yolo_seg/dataset.yaml")
 
 
-def default_model_path() -> Path:
+def default_model_source() -> str:
+	return "yolo11m-seg.yaml"
+
+
+def default_output_model_path() -> Path:
 	return prefer_primary_path("road/model/02_yolo11m-cobot-road-type-sg.pt")
 
 
@@ -45,9 +49,15 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument(
 		"--model",
+		type=str,
+		default=default_model_source(),
+		help="YOLO model source (.yaml for scratch training or .pt for fine-tuning).",
+	)
+	parser.add_argument(
+		"--output-model",
 		type=Path,
-		default=default_model_path(),
-		help="Path to segmentation checkpoint (.pt).",
+		default=default_output_model_path(),
+		help="Path where the trained .pt checkpoint will be copied.",
 	)
 	parser.add_argument("--epochs", type=int, default=100, help="Training epochs.")
 	parser.add_argument("--imgsz", type=int, default=640, help="Input image size.")
@@ -71,10 +81,11 @@ def parse_args() -> argparse.Namespace:
 	return parser.parse_args()
 
 
-def validate_paths(data_yaml: Path, model_path: Path) -> None:
+def validate_paths(data_yaml: Path, model_source: str) -> None:
 	if not data_yaml.exists():
 		raise FileNotFoundError(f"dataset.yaml not found: {data_yaml}")
-	if not model_path.exists():
+	model_path = Path(model_source)
+	if model_path.suffix == ".pt" and not model_path.exists():
 		raise FileNotFoundError(f"model checkpoint not found: {model_path}")
 
 
@@ -108,9 +119,9 @@ def main() -> None:
 		print(f"Artifacts: {results.save_dir}")
 		best_weights = Path(results.save_dir) / "weights" / "best.pt"
 		if best_weights.exists():
-			args.model.parent.mkdir(parents=True, exist_ok=True)
-			shutil.copy2(best_weights, args.model)
-			print(f"Updated model checkpoint: {args.model}")
+			args.output_model.parent.mkdir(parents=True, exist_ok=True)
+			shutil.copy2(best_weights, args.output_model)
+			print(f"Updated model checkpoint: {args.output_model}")
 		else:
 			print(f"best.pt not found, skipping model update: {best_weights}")
 
