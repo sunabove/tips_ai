@@ -4,20 +4,22 @@
 # 변환 과정에서 동영상의 모든 프레임을 추출하여 이미지로 저장하고,
 # 해당 프레임에서 검출된 객체의 마스크를 YOLO segmentation 형식으로 변환합니다.
 
-# segmentaion 폴리곤은 model/01_yelo11m-road-sg.pt에서 학습된 모델을 이용하여 추출합니다.
+# segmentation 폴리곤은 model/01_yolo11m-road-sg.pt에서 학습된 모델을 이용하여 추출합니다.
 # 하나의 영역이 추출되면 모두 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
 # 2개 이상의 영역이 추출되면, 신뢰도 평균이상의 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
+# 추출된 영역의 클래스명은 입력 파일의 클래스명입니다.
 
 # 변환 과정에서 사용되는 YOLO segmentation dataset 형식은 다음과 같습니다.
-# road/dataset/cobot_01/colormap_road.txt 파일에 정의된 클래스명에 매핑된 색상을 이용하여,
-# 마스크된 이미지를 변환 폴더에 생성합니다.
-# 마스크 이미지의 파일명은 {class_name}_{index}_{frame_index}.png 형식으로 저장됩니다.
 # - images/train/ : 학습용 이미지 폴더
 # - images/val/ : 검증용 이미지 폴더
 # - images/test/ : 테스트용 이미지 폴더
 # - labels/train/ : 학습용 라벨 폴더
 # - labels/val/ : 검증용 라벨 폴더
 # - labels/test/ : 테스트용 라벨 폴더
+
+# road/dataset/cobot_01/colormap_road.txt 파일에 정의된 클래스명에 매핑된 색상을 이용하여,
+# 마스크된 이미지를 해당 변환 폴더에 생성합니다.
+# 마스크 이미지의 파일명은 {class_name}_{index}_{frame_index}.png 형식으로 저장됩니다.
 
 # Manual run:
 # 1. cd ai\road
@@ -59,7 +61,12 @@ def default_output_root() -> Path:
 
 def default_model_path() -> Path:
     """스크립트 기준 모델 경로를 반환합니다."""
-    return _SCRIPT_DIR / "model" / "01_yelo11m-road-sg.pt"
+    return _SCRIPT_DIR / "model" / "01_yolo11m-road-sg.pt"
+
+
+def default_colormap_path() -> Path:
+    """스크립트 기준 colormap_road.txt 경로를 반환합니다."""
+    return _SCRIPT_DIR.parent.parent / "colormap_road.txt"
 
 
 def class_specs_from_model(model: YOLO) -> List[ClassSpec]:
@@ -83,6 +90,58 @@ def collect_videos(cobot_root: Path) -> List[Path]:
 def extract_video_stem(video_path: Path) -> str:
     """동영상 파일명에서 stem을 반환합니다 (예: road_01 <- road_01.mp4)."""
     return video_path.stem
+
+
+def extract_class_name_from_stem(stem: str) -> str:
+    """{class_name}_{index} 형식의 stem 에서 class_name 을 추출합니다."""
+    if "_" not in stem:
+        raise ValueError(f"파일명이 {{class_name}}_{{index}} 형식이 아닙니다: {stem}")
+    class_name, _ = stem.rsplit("_", 1)
+    if not class_name:
+        raise ValueError(f"클래스명이 비어 있습니다: {stem}")
+    return class_name
+
+
+def class_name_to_id_map(classes: List[ClassSpec]) -> Dict[str, int]:
+    return {c.name: c.yolo_id for c in classes}
+
+
+def find_colormap_path(cobot_root: Path, colormap_path: Path | None) -> Path:
+    """cobot_root 우선, 그 다음 명시/기본 경로에서 colormap 파일을 찾습니다."""
+    candidates: list[Path] = [cobot_root / "colormap_road.txt"]
+    if colormap_path is not None:
+        candidates.append(colormap_path)
+    else:
+        candidates.append(default_colormap_path())
+
+    for path in candidates:
+        if path.exists():
+            return path
+    raise FileNotFoundError(
+        "colormap_road.txt 파일을 찾을 수 없습니다. "
+        f"확인 경로: {[str(p) for p in candidates]}"
+    )
+
+
+def load_colormap(colormap_path: Path) -> Dict[str, Tuple[int, int, int]]:
+    """class_name R G B 형식의 colormap 파일을 읽어 RGB 딕셔너리로 반환합니다."""
+    cmap: dict[str, tuple[int, int, int]] = {}
+    for raw in colormap_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        class_name = parts[0]
+        try:
+            r, g, b = (int(parts[1]), int(parts[2]), int(parts[3]))
+        except ValueError:
+            continue
+        cmap[class_name] = (r, g, b)
+    if not cmap:
+        raise RuntimeError(f"유효한 colormap 항목이 없습니다: {colormap_path}")
+    return cmap
 
 
 def split_items(
@@ -115,6 +174,7 @@ def ensure_dirs(output_root: Path, splits: Iterable[str]) -> None:
     for split in splits:
         (output_root / "images" / split).mkdir(parents=True, exist_ok=True)
         (output_root / "labels" / split).mkdir(parents=True, exist_ok=True)
+        (output_root / "masks" / split).mkdir(parents=True, exist_ok=True)
 
 
 def polygon_from_binary_mask(
@@ -156,8 +216,8 @@ def build_label_lines_from_model(
     frame_bgr: np.ndarray,
     min_area: float,
     conf_threshold: float,
-) -> List[str]:
-    """YOLO 세그멘테이션 모델 추론 결과를 YOLO segmentation 라벨 라인으로 변환합니다.
+) -> List[np.ndarray]:
+    """YOLO 세그멘테이션 모델 추론 결과에서 유지할 폴리곤 목록을 반환합니다.
 
     규칙:
     - 1개 영역이면 모두 저장
@@ -177,17 +237,14 @@ def build_label_lines_from_model(
     if n == 0:
         return []
 
-    if result.boxes is not None and result.boxes.conf is not None and result.boxes.cls is not None:
+    if result.boxes is not None and result.boxes.conf is not None:
         confs = result.boxes.conf.detach().cpu().numpy().astype(np.float32)
-        cls_ids = result.boxes.cls.detach().cpu().numpy().astype(np.int32)
     else:
         confs = np.ones(n, dtype=np.float32)
-        cls_ids = np.zeros(n, dtype=np.int32)
 
-    m = min(n, len(confs), len(cls_ids))
+    m = min(n, len(confs))
     polygons_xy = polygons_xy[:m]
     confs = confs[:m]
-    cls_ids = cls_ids[:m]
 
     if m >= 2:
         mean_conf = float(np.mean(confs))
@@ -195,7 +252,7 @@ def build_label_lines_from_model(
     else:
         keep_mask = np.ones(m, dtype=bool)
 
-    lines: list[str] = []
+    kept_polygons: list[np.ndarray] = []
 
     for i, poly_xy in enumerate(polygons_xy):
         if not bool(keep_mask[i]):
@@ -209,17 +266,52 @@ def build_label_lines_from_model(
             continue
 
         pts = poly_xy.astype(np.float32).copy()
-        pts[:, 0] = np.clip(pts[:, 0] / w, 0.0, 1.0)
-        pts[:, 1] = np.clip(pts[:, 1] / h, 0.0, 1.0)
+        if len(pts) >= 3:
+            kept_polygons.append(pts)
+
+    return kept_polygons
+
+
+def build_label_lines_with_fixed_class(
+    polygons_xy: List[np.ndarray],
+    yolo_class_id: int,
+    width: int,
+    height: int,
+) -> List[str]:
+    lines: list[str] = []
+    for poly_xy in polygons_xy:
+        pts = poly_xy.astype(np.float32).copy()
+        pts[:, 0] = np.clip(pts[:, 0] / width, 0.0, 1.0)
+        pts[:, 1] = np.clip(pts[:, 1] / height, 0.0, 1.0)
 
         flat = pts.flatten().tolist()
         if len(flat) < 6:
             continue
 
         coord_text = " ".join(f"{x:.6f}" for x in flat)
-        lines.append(f"{int(cls_ids[i])} {coord_text}")
+        lines.append(f"{yolo_class_id} {coord_text}")
 
     return lines
+
+
+def render_colored_mask_image(
+    image_shape: Tuple[int, int],
+    polygons_xy: List[np.ndarray],
+    rgb_color: Tuple[int, int, int],
+) -> np.ndarray:
+    """선택된 폴리곤을 단일 클래스 색상으로 채운 마스크(BGR)를 생성합니다."""
+    h, w = image_shape
+    mask_bgr = np.zeros((h, w, 3), dtype=np.uint8)
+    if not polygons_xy:
+        return mask_bgr
+
+    bgr = (int(rgb_color[2]), int(rgb_color[1]), int(rgb_color[0]))
+    for poly_xy in polygons_xy:
+        pts_i32 = np.round(poly_xy).astype(np.int32)
+        if len(pts_i32) >= 3:
+            cv2.fillPoly(mask_bgr, [pts_i32], bgr)
+
+    return mask_bgr
 
 
 def write_dataset_yaml(output_root: Path, classes: List[ClassSpec]) -> None:
@@ -245,6 +337,7 @@ def convert(
     cobot_root: Path,
     output_root: Path,
     model_path: Path,
+    colormap_path: Path | None,
     train_ratio: float,
     val_ratio: float,
     seed: int,
@@ -257,10 +350,14 @@ def convert(
 
     model = YOLO(str(model_path))
     classes = class_specs_from_model(model)
+    class_to_id = class_name_to_id_map(classes)
+    resolved_colormap_path = find_colormap_path(cobot_root, colormap_path)
+    class_to_color = load_colormap(resolved_colormap_path)
     videos = collect_videos(cobot_root)
 
     print(f"발견된 동영상: {len(videos)} 개")
     print(f"클래스: {[f'{c.yolo_id}:{c.name}' for c in classes]}")
+    print(f"colormap 경로: {resolved_colormap_path}")
 
     # 전체 (video_path, frame_index) 쌍 수집
     all_items: list[tuple[Path, int]] = []
@@ -297,10 +394,25 @@ def convert(
 
             for video_path, frame_idx in items:
                 stem = extract_video_stem(video_path)
+                input_class_name = extract_class_name_from_stem(stem)
+                if input_class_name not in class_to_id:
+                    raise KeyError(
+                        f"입력 클래스명 '{input_class_name}' 이(가) 모델 클래스에 없습니다: "
+                        f"{sorted(class_to_id.keys())}"
+                    )
+                input_class_id = class_to_id[input_class_name]
+
+                if input_class_name not in class_to_color:
+                    raise KeyError(
+                        f"입력 클래스명 '{input_class_name}' 이(가) colormap에 없습니다: "
+                        f"{resolved_colormap_path}"
+                    )
+
                 file_id = f"{stem}_{frame_idx:06d}"
 
                 img_dst = output_root / "images" / split / f"{file_id}.png"
                 lbl_dst = output_root / "labels" / split / f"{file_id}.txt"
+                mask_dst = output_root / "masks" / split / f"{file_id}.png"
 
                 # VideoCapture 캐싱
                 if video_path not in cap_cache:
@@ -316,14 +428,31 @@ def convert(
                 # 마스크 프레임을 이미지로 저장
                 cv2.imwrite(str(img_dst), frame_bgr)
 
-                # YOLO 세그멘테이션 모델 추론 결과를 라벨로 저장
-                label_lines = build_label_lines_from_model(
+                # YOLO 세그멘테이션 모델 추론 결과에서 폴리곤 추출
+                polygons_xy = build_label_lines_from_model(
                     model=model,
                     frame_bgr=frame_bgr,
                     min_area=min_area,
                     conf_threshold=conf_threshold,
                 )
+
+                # 추출된 모든 영역의 클래스는 입력 파일 클래스명으로 고정
+                h, w = frame_bgr.shape[:2]
+                label_lines = build_label_lines_with_fixed_class(
+                    polygons_xy=polygons_xy,
+                    yolo_class_id=input_class_id,
+                    width=w,
+                    height=h,
+                )
                 lbl_dst.write_text("\n".join(label_lines), encoding="utf-8")
+
+                # colormap 기반 컬러 마스크 이미지 생성
+                mask_bgr = render_colored_mask_image(
+                    image_shape=(h, w),
+                    polygons_xy=polygons_xy,
+                    rgb_color=class_to_color[input_class_name],
+                )
+                cv2.imwrite(str(mask_dst), mask_bgr)
 
                 processed += 1
                 split_done += 1
@@ -346,6 +475,7 @@ def convert(
     print(f"입력 경로  : {cobot_root}")
     print(f"출력 경로  : {output_root}")
     print(f"모델 경로  : {model_path}")
+    print(f"컬러맵 경로: {resolved_colormap_path}")
     print(f"클래스 수  : {len(classes)}")
     print(f"총 프레임  : {processed}")
     print(
@@ -379,6 +509,15 @@ def parse_args() -> argparse.Namespace:
         default=default_model_path(),
         help=f"세그멘테이션 모델 경로 (기본값: {default_model_path()})",
     )
+    parser.add_argument(
+        "--colormap",
+        type=Path,
+        default=None,
+        help=(
+            "colormap_road.txt 경로 (미지정 시 cobot_root/colormap_road.txt "
+            f"또는 {default_colormap_path()} 자동 탐색)"
+        ),
+    )
     parser.add_argument("--train-ratio", type=float, default=0.8, help="학습 데이터 비율 (기본값: 0.8)")
     parser.add_argument("--val-ratio", type=float, default=0.1, help="검증 데이터 비율 (기본값: 0.1)")
     parser.add_argument("--seed", type=int, default=42, help="랜덤 시드 (기본값: 42)")
@@ -409,6 +548,7 @@ if __name__ == "__main__":
         cobot_root=args.cobot_root,
         output_root=args.output_root,
         model_path=args.model,
+        colormap_path=args.colormap,
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         seed=args.seed,
