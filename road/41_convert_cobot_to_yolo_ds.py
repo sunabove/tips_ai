@@ -4,10 +4,10 @@
 # 변환 과정에서 동영상의 모든 프레임을 추출하여 이미지로 저장하고,
 # 해당 프레임에서 검출된 객체의 마스크를 YOLO segmentation 형식으로 변환합니다.
 
-# segmentation 폴리곤은 model/01_yolo11m-road-sg.pt에서 학습된 모델을 이용하여 추출합니다.
+# segmentation 폴리곤은 model/01_yolo11m-road-sg.pt에서 학습된 모델을 이용하여 도로 영역을 추출합니다.
+# 추출된 도로 영역의 클래스명은 입력 파일의 클래스명으로 매핑합니다.
 # 하나의 영역이 추출되면 모두 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
 # 2개 이상의 영역이 추출되면, 신뢰도 평균이상의 영역만 YOLO segmentation 형식으로 변환하여 라벨 파일에 저장합니다.
-# 추출된 영역의 클래스명은 입력 파일의 클래스명입니다.
 
 # 변환 과정에서 사용되는 YOLO segmentation dataset 형식은 다음과 같습니다.
 # - images/train/ : 학습용 이미지 폴더
