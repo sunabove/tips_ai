@@ -3,25 +3,30 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
-from ultralytics import YOLO 
+
+try:
+	from ultralytics import YOLO
+except ImportError as exc:
+	raise SystemExit(
+		"Ultralytics is not installed. Install it with: pip install ultralytics"
+	) from exc
+
 
 def default_dataset_yaml() -> Path:
-	primary = Path("road/dataset/pothole600_yolo_seg/dataset.yaml")
-	fallback = Path("dataset/pothole600_yolo_seg/dataset.yaml")
+	primary = Path("road/dataset/cobot_01_yolo_seg/dataset.yaml")
+	fallback = Path("dataset/cobot_01_yolo_seg/dataset.yaml")
 	return primary if primary.exists() else fallback
 
 
-def default_model_source() -> str:
-	return "yolo11m-seg.yaml"
-
-
-def default_output_model_path() -> Path:
-	return Path("road/model/04_yolo11m-pothole-sg.pt")
+def default_model_path() -> Path:
+	primary = Path("road/model/02_yolo11m-cobot-road-type-sg.pt")
+	fallback = Path("model/02_yolo11m-cobot-road-type-sg.pt")
+	return primary if primary.exists() else fallback
 
 
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(
-		description="Train YOLO segmentation model using converted pothole600 dataset."
+		description="Train YOLO segmentation model using converted COBOT dataset."
 	)
 	parser.add_argument(
 		"--data",
@@ -31,15 +36,9 @@ def parse_args() -> argparse.Namespace:
 	)
 	parser.add_argument(
 		"--model",
-		type=str,
-		default=default_model_source(),
-		help="YOLO model source (.yaml for scratch training or .pt for fine-tuning).",
-	)
-	parser.add_argument(
-		"--output-model",
 		type=Path,
-		default=default_output_model_path(),
-		help="Path where the trained .pt checkpoint will be copied.",
+		default=default_model_path(),
+		help="Path to segmentation checkpoint (.pt).",
 	)
 	parser.add_argument("--epochs", type=int, default=100, help="Training epochs.")
 	parser.add_argument("--imgsz", type=int, default=640, help="Input image size.")
@@ -48,7 +47,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument("--patience", type=int, default=30, help="Early stopping patience.")
 	parser.add_argument("--device", type=str, default="0", help="CUDA device index or 'cpu'.")
 	parser.add_argument("--project", type=Path, default=Path("road/runs"), help="Run root dir.")
-	parser.add_argument("--name", type=str, default="pothole600-seg", help="Run name.")
+	parser.add_argument("--name", type=str, default="cobot-road-seg", help="Run name.")
 	parser.add_argument("--seed", type=int, default=42, help="Random seed.")
 	parser.add_argument(
 		"--cache",
@@ -63,11 +62,10 @@ def parse_args() -> argparse.Namespace:
 	return parser.parse_args()
 
 
-def validate_paths(data_yaml: Path, model_source: str) -> None:
+def validate_paths(data_yaml: Path, model_path: Path) -> None:
 	if not data_yaml.exists():
 		raise FileNotFoundError(f"dataset.yaml not found: {data_yaml}")
-	model_path = Path(model_source)
-	if model_path.suffix == ".pt" and not model_path.exists():
+	if not model_path.exists():
 		raise FileNotFoundError(f"model checkpoint not found: {model_path}")
 
 
@@ -80,7 +78,7 @@ def main() -> None:
 	print(f"Model: {args.model}")
 	print(f"Device: {args.device}")
 
-	model = YOLO(args.model)
+	model = YOLO(str(args.model))
 	results = model.train(
 		data=str(args.data),
 		epochs=args.epochs,
@@ -97,14 +95,13 @@ def main() -> None:
 	)
 
 	print("Training complete.")
-
 	if getattr(results, "save_dir", None):
 		print(f"Artifacts: {results.save_dir}")
 		best_weights = Path(results.save_dir) / "weights" / "best.pt"
 		if best_weights.exists():
-			args.output_model.parent.mkdir(parents=True, exist_ok=True)
-			shutil.copy2(best_weights, args.output_model)
-			print(f"Saved trained model checkpoint: {args.output_model}")
+			args.model.parent.mkdir(parents=True, exist_ok=True)
+			shutil.copy2(best_weights, args.model)
+			print(f"Updated model checkpoint: {args.model}")
 		else:
 			print(f"best.pt not found, skipping model update: {best_weights}")
 
