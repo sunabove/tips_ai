@@ -10,13 +10,14 @@ import numpy as np
 
 
 def prefer_primary_path(primary: str) -> Path:
-	primary_path = Path(primary)
+	base_dir = Path(__file__).resolve().parent
+	primary_path = base_dir / primary
 	if primary_path.exists():
 		return primary_path
 
-	parts = primary_path.parts
+	parts = Path(primary).parts
 	if len(parts) >= 2:
-		return Path(*parts[1:])
+		return base_dir / Path(*parts[1:])
 
 	return primary_path
 
