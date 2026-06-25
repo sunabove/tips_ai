@@ -110,7 +110,7 @@ def extract_class_name_from_stem(stem: str) -> str:
     """{class_name}_{index} 형식의 stem 에서 class_name 을 추출합니다."""
     if "_" not in stem:
         raise ValueError(f"파일명이 {{class_name}}_{{index}} 형식이 아닙니다: {stem}")
-    class_name, _ = stem.rsplit("_", 1)
+    class_name, _ = stem.rsplit("_", 0)
     if not class_name:
         raise ValueError(f"클래스명이 비어 있습니다: {stem}")
     return class_name
