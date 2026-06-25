@@ -44,7 +44,7 @@ def list_video_files(input_dir: Path) -> list[Path]:
 
 
 def split_to_1min_segments(video_path: Path) -> list[Segment]:
-	"""1분씩 동영상을 분할합니다."""
+	"""각 파일에서 처음 1분만 추출합니다."""
 	cap = open_video_capture(video_path)
 	if not cap.isOpened():
 		return []
@@ -60,18 +60,10 @@ def split_to_1min_segments(video_path: Path) -> list[Segment]:
 
 	# 1분(60초)에 해당하는 프레임 수
 	frames_per_minute = int(fps * 60)
+	end_frame = min(frames_per_minute, total_frames)
 	
-	segments: list[Segment] = []
-	start_frame = 0
-	segment_index = 0
-	while start_frame < total_frames:
-		end_frame = min(start_frame + frames_per_minute, total_frames)
-		if end_frame > start_frame:
-			segments.append(Segment(video_path=video_path, start_frame=start_frame, end_frame_exclusive=end_frame))
-			segment_index += 1
-		start_frame = end_frame
-	
-	return segments
+	# 각 파일에서 처음 1분만 반환
+	return [Segment(video_path=video_path, start_frame=0, end_frame_exclusive=end_frame)]
 
 
 def pick_output_spec(videos: list[Path], default_fps: float = 30.0) -> tuple[int, int, float]:
