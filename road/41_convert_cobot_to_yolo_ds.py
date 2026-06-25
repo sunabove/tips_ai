@@ -38,7 +38,7 @@ from __future__ import annotations
 import argparse
 import random
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -57,6 +57,13 @@ class ClassSpec:
 class TargetClassSpec:
     target_id: int
     name: str
+
+
+@dataclass
+class DecodeFailureStat:
+    attempted: int = 0
+    failed: int = 0
+    failed_frames: list[int] = field(default_factory=list)
 
 
 # 스크립트 파일이 위치한 디렉터리 (300_python/ai/road/)
@@ -492,6 +499,41 @@ def clear_output_root(output_root: Path) -> None:
         shutil.rmtree(output_root)
 
 
+def _compress_frame_ranges(frame_indices: List[int]) -> List[Tuple[int, int]]:
+    """정렬된 프레임 인덱스를 연속 범위(start, end) 목록으로 압축합니다."""
+    if not frame_indices:
+        return []
+
+    unique_sorted = sorted(set(frame_indices))
+    ranges: list[tuple[int, int]] = []
+    start = unique_sorted[0]
+    prev = unique_sorted[0]
+
+    for idx in unique_sorted[1:]:
+        if idx == prev + 1:
+            prev = idx
+            continue
+        ranges.append((start, prev))
+        start = idx
+        prev = idx
+
+    ranges.append((start, prev))
+    return ranges
+
+
+def _format_ranges_for_print(ranges: List[Tuple[int, int]], max_items: int = 12) -> str:
+    if not ranges:
+        return "-"
+
+    parts: list[str] = []
+    for start, end in ranges[:max_items]:
+        parts.append(str(start) if start == end else f"{start}-{end}")
+
+    if len(ranges) > max_items:
+        parts.append(f"...(+{len(ranges) - max_items})")
+    return ", ".join(parts)
+
+
 def convert(
     cobot_root: Path,
     output_root: Path,
@@ -560,6 +602,7 @@ def convert(
 
     # 동영상 파일별로 cap 을 캐싱하여 반복 open/close 최소화
     cap_cache: dict[Path, cv2.VideoCapture] = {}
+    decode_stats: dict[Path, DecodeFailureStat] = {}
 
     try:
         for split, items in split_map.items():
@@ -594,9 +637,15 @@ def convert(
                     cap_cache[video_path] = cv2.VideoCapture(str(video_path))
                 cap = cap_cache[video_path]
 
+                if video_path not in decode_stats:
+                    decode_stats[video_path] = DecodeFailureStat()
+                decode_stats[video_path].attempted += 1
+
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame_bgr = cap.read()
                 if not ret or frame_bgr is None:
+                    decode_stats[video_path].failed += 1
+                    decode_stats[video_path].failed_frames.append(frame_idx)
                     print(f"\n[경고] 프레임 읽기 실패: {video_path} frame={frame_idx}")
                     continue
 
@@ -665,6 +714,25 @@ def convert(
         f"val: {len(split_map['val'])}, "
         f"test: {len(split_map['test'])}"
     )
+
+    print("\n[디코딩 실패 통계] (mpeg4 marker/f_code 등 디코더 오류 구간 추정)")
+    any_failure = False
+    for video_path in sorted(decode_stats.keys(), key=lambda p: p.name.lower()):
+        stat = decode_stats[video_path]
+        if stat.failed <= 0:
+            continue
+
+        any_failure = True
+        fail_rate = (stat.failed / stat.attempted * 100.0) if stat.attempted > 0 else 0.0
+        ranges = _compress_frame_ranges(stat.failed_frames)
+        print(
+            f"  - {video_path.name}: "
+            f"failed={stat.failed}/{stat.attempted} ({fail_rate:.2f}%), "
+            f"ranges={_format_ranges_for_print(ranges)}"
+        )
+
+    if not any_failure:
+        print("  - 프레임 읽기 실패가 감지되지 않았습니다.")
 
 
 def parse_args() -> argparse.Namespace:
