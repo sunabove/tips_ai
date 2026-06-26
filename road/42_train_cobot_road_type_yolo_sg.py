@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import signal
+from datetime import datetime
 from pathlib import Path
 
 try:
@@ -35,7 +36,9 @@ def default_model_source() -> str:
 
 
 def default_output_model_path() -> Path:
-	return prefer_primary_path("road/model/02_yolo11m-cobot-road-type-sg.pt")
+	base_path = prefer_primary_path("road/model/02_yolo11m-cobot-road-type-sg.pt")
+	date_suffix = datetime.now().strftime("%y%m%d")
+	return base_path.with_name(f"{base_path.stem}_{date_suffix}{base_path.suffix}")
 
 
 def parse_args() -> argparse.Namespace:
