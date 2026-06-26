@@ -50,7 +50,7 @@ def list_video_files(input_dir: Path) -> list[Path]:
 
 
 def split_to_1min_segments(video_path: Path) -> list[Segment]:
-	"""각 파일에서 처음 1분만 추출합니다."""
+	"""각 파일에서 처음 20초만 추출합니다."""
 	cap = open_video_capture(video_path)
 	if not cap.isOpened():
 		return []
@@ -64,11 +64,11 @@ def split_to_1min_segments(video_path: Path) -> list[Segment]:
 	if total_frames <= 0 or fps <= 0:
 		return []
 
-	# 1분(60초)에 해당하는 프레임 수
-	frames_per_minute = int(fps * 60)
-	end_frame = min(frames_per_minute, total_frames)
+	# 20초에 해당하는 프레임 수
+	frames_per_clip = int(fps * 20)
+	end_frame = min(frames_per_clip, total_frames)
 	
-	# 각 파일에서 처음 1분만 반환
+	# 각 파일에서 처음 20초만 반환
 	return [Segment(video_path=video_path, start_frame=0, end_frame_exclusive=end_frame)]
 
 
@@ -91,10 +91,9 @@ def read_video_meta(video_path: Path) -> VideoMeta | None:
 def build_fair_segments(
 	videos: list[Path],
 	output_fps: float,
-	max_total_seconds: float,
-	chunk_seconds: float,
+	clip_seconds: float,
 ) -> tuple[list[Segment], dict[Path, VideoMeta]]:
-	"""동영상 목록을 라운드로빈으로 골고루 섞어, 최대 재생시간 이내 세그먼트를 생성합니다."""
+	"""동영상 목록의 각 파일에서 처음 clip_seconds 만큼만 잘라 순서대로 반환합니다."""
 	valid_meta: dict[Path, VideoMeta] = {}
 	for path in videos:
 		meta = read_video_meta(path)
@@ -104,46 +103,26 @@ def build_fair_segments(
 	if not valid_meta:
 		return [], {}
 
-	max_frames_budget = int(max(1.0, max_total_seconds) * max(1.0, output_fps))
-	chunk_frames = int(max(1.0, chunk_seconds) * max(1.0, output_fps))
-	chunk_frames = max(1, chunk_frames)
-
-	next_start_frame: dict[Path, int] = {path: 0 for path in valid_meta}
 	ordered_segments: list[Segment] = []
-	remaining_budget = max_frames_budget
+	clip_frames = int(max(1.0, clip_seconds) * max(1.0, output_fps))
+	clip_frames = max(1, clip_frames)
 
-	while remaining_budget > 0:
-		made_progress = False
-		for path in videos:
-			meta = valid_meta.get(path)
-			if meta is None:
-				continue
+	for path in videos:
+		meta = valid_meta.get(path)
+		if meta is None:
+			continue
 
-			start = next_start_frame[path]
-			if start >= meta.total_frames:
-				continue
+		take = min(clip_frames, meta.total_frames)
+		if take <= 0:
+			continue
 
-			available = meta.total_frames - start
-			take = min(chunk_frames, available, remaining_budget)
-			if take <= 0:
-				continue
-
-			ordered_segments.append(
-				Segment(
-					video_path=path,
-					start_frame=start,
-					end_frame_exclusive=start + take,
-				)
+		ordered_segments.append(
+			Segment(
+				video_path=path,
+				start_frame=0,
+				end_frame_exclusive=take,
 			)
-			next_start_frame[path] = start + take
-			remaining_budget -= take
-			made_progress = True
-
-			if remaining_budget <= 0:
-				break
-
-		if not made_progress:
-			break
+		)
 
 	return ordered_segments, valid_meta
 
@@ -252,11 +231,10 @@ def append_segment_frames_sequential(
 def merge_sequential_segments(
 	input_dir: Path,
 	output_name: str | None = None,
-	max_total_seconds: float = 240.0,
-	chunk_seconds: float = 10.0,
+	clip_seconds: float = 20.0,
 	progress_step_percent: float = 10.0,
 ) -> Path:
-	"""동영상 목록에서 골고루 라운드로빈 병합하고 총 재생시간을 제한합니다."""
+	"""동영상 목록의 각 파일에서 처음 clip_seconds만 잘라 순차 병합합니다."""
 	if not input_dir.exists() or not input_dir.is_dir():
 		raise FileNotFoundError(f"Input directory not found: {input_dir}")
 
@@ -271,12 +249,11 @@ def merge_sequential_segments(
 
 	out_w, out_h, out_fps = pick_output_spec(videos)
 
-	print(f"[2/4] Building fair segments (<= {max_total_seconds:.1f}s total, chunk={chunk_seconds:.1f}s)")
+	print(f"[2/4] Building segments (clip={clip_seconds:.1f}s per video)")
 	ordered_segments, valid_meta = build_fair_segments(
 		videos,
 		output_fps=out_fps,
-		max_total_seconds=max_total_seconds,
-		chunk_seconds=chunk_seconds,
+		clip_seconds=clip_seconds,
 	)
 
 	for path in videos:
@@ -291,15 +268,14 @@ def merge_sequential_segments(
 
 	print(f"  - Total merge segments: {len(ordered_segments)}")
 
-	# 총 프레임 수를 계산하여 분 단위로 변환
+	# 총 프레임 수를 계산하여 재생시간으로 변환
 	total_frames = sum(seg.end_frame_exclusive - seg.start_frame for seg in ordered_segments)
-	total_minutes = int(total_frames / (out_fps * 60)) if out_fps > 0 else 0
 	total_seconds = (total_frames / out_fps) if out_fps > 0 else 0.0
 	
 	if output_name:
 		output_path = input_dir / output_name
 	else:
-		output_path = input_dir / f"cobot_merged_{total_minutes}min_{int(total_seconds)}s.mp4"
+		output_path = input_dir / f"cobot_merged_{int(total_seconds)}s.mp4"
 
 	print("[3/4] Preparing output writer")
 	print(f"  - Output: {output_path}")
@@ -369,16 +345,10 @@ def parse_args() -> argparse.Namespace:
 		help="출력 파일명 (input-dir에 저장됨). 예: merged.mp4",
 	)
 	parser.add_argument(
-		"--max-total-seconds",
+		"--clip-seconds",
 		type=float,
-		default=240.0,
-		help="최대 총 재생시간(초). 기본값: 240 (4분)",
-	)
-	parser.add_argument(
-		"--chunk-seconds",
-		type=float,
-		default=10.0,
-		help="각 동영상에서 라운드별로 가져올 길이(초). 기본값: 10",
+		default=20.0,
+		helper="각 동영상에서 잘라낼 길이(초). 기본값: 20",
 	)
 	parser.add_argument(
 		"--progress-step-percent",
@@ -393,17 +363,14 @@ def main() -> None:
 	args = parse_args()
 	if args.progress_step_percent <= 0:
 		raise SystemExit("--progress-step-percent must be > 0")
-	if args.max_total_seconds <= 0:
-		raise SystemExit("--max-total-seconds must be > 0")
-	if args.chunk_seconds <= 0:
-		raise SystemExit("--chunk-seconds must be > 0")
+	if args.clip_seconds <= 0:
+		raise SystemExit("--clip-seconds must be > 0")
 
 	try:
 		output_path = merge_sequential_segments(
 			input_dir=args.input_dir,
 			output_name=args.output_name,
-			max_total_seconds=args.max_total_seconds,
-			chunk_seconds=args.chunk_seconds,
+			clip_seconds=args.clip_seconds,
 			progress_step_percent=args.progress_step_percent,
 		)
 		print(f"Done: {output_path}")
