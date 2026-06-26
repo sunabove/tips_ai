@@ -1,5 +1,5 @@
 # road/dataset/cobot_01/ 폴더 아래에 있는 모든 동영상 파일을 YOLO segmentation dataset 형식으로 변환합니다.
-# 동영상의 파일명은 {class_name}_{index}.mp4 형식으로 되어 있습니다.
+# 동영상의 파일명은 {class_name}_{index}_{train|val|test}.mp4 형식으로 되어 있습니다.
 # 변환 폴더는 road/dataset/cobot_01_yolo_seg/ 입니다.
 # 변환 과정에서 동영상의 모든 프레임을 추출하여 이미지로 저장하고,
 # 해당 프레임에서 검출된 객체의 마스크를 YOLO segmentation 형식으로 변환합니다.
@@ -109,18 +109,29 @@ def collect_videos(cobot_root: Path) -> List[Path]:
 
 
 def extract_video_stem(video_path: Path) -> str:
-    """동영상 파일명에서 stem을 반환합니다 (예: road_01 <- road_01.mp4)."""
+    """동영상 파일명에서 stem을 반환합니다 (예: road_01_train <- road_01_train.mp4)."""
     return video_path.stem
 
 
 def extract_class_name_from_stem(stem: str) -> str:
-    """{class_name}_{index} 형식의 stem 에서 class_name 을 추출합니다."""
-    if "_" not in stem:
-        raise ValueError(f"파일명이 {{class_name}}_{{index}} 형식이 아닙니다: {stem}")
-    class_name, _ = stem.rsplit("_", 1)
+    """{class_name}_{index}_{split} 형식의 stem 에서 class_name 을 추출합니다."""
+    if stem.count("_") < 2:
+        raise ValueError(f"파일명이 {{class_name}}_{{index}}_{{split}} 형식이 아닙니다: {stem}")
+    class_name, _, _ = stem.rsplit("_", 2)
     if not class_name:
         raise ValueError(f"클래스명이 비어 있습니다: {stem}")
     return class_name
+
+
+def extract_split_name_from_stem(stem: str) -> str:
+    """{class_name}_{index}_{split} 형식의 stem 에서 split(train/val/test)을 추출합니다."""
+    if stem.count("_") < 2:
+        raise ValueError(f"파일명이 {{class_name}}_{{index}}_{{split}} 형식이 아닙니다: {stem}")
+
+    _, _, split_name = stem.rsplit("_", 2)
+    if split_name not in {"train", "val", "test"}:
+        raise ValueError(f"split 값이 train/val/test 중 하나가 아닙니다: {stem}")
+    return split_name
 
 
 def class_name_to_id_map(classes: List[ClassSpec]) -> Dict[str, int]:
@@ -577,7 +588,8 @@ def convert(
         print("[경고] 모델에서 'road' 클래스를 찾지 못했습니다. 모든 예측 폴리곤을 사용합니다.")
 
     # 전체 (video_path, frame_index) 쌍 수집
-    all_items: list[tuple[Path, int]] = []
+    split_map: dict[str, list[tuple[Path, int]]] = {"train": [], "val": [], "test": []}
+    legacy_items: list[tuple[Path, int]] = []
     for video_path in videos:
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
@@ -585,15 +597,31 @@ def convert(
             continue
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
+
+        stem = extract_video_stem(video_path)
+        try:
+            split_name = extract_split_name_from_stem(stem)
+        except ValueError:
+            split_name = None
+
         for fi in range(0, total_frames, frame_step):
-            all_items.append((video_path, fi))
+            if split_name is None:
+                legacy_items.append((video_path, fi))
+            else:
+                split_map[split_name].append((video_path, fi))
+
+    if legacy_items:
+        print(f"[경고] split 접미사가 없는 동영상이 있어 기존 방식으로 분할합니다: {len(legacy_items)} 프레임")
+        legacy_split_map = split_items(legacy_items, train_ratio, val_ratio, seed)
+        for split_name, items in legacy_split_map.items():
+            split_map[split_name].extend(items)
+
+    all_items = split_map["train"] + split_map["val"] + split_map["test"]
 
     if not all_items:
         raise RuntimeError("추출 가능한 프레임이 없습니다.")
 
     print(f"총 프레임 수 (frame_step={frame_step}): {len(all_items)}")
-
-    split_map = split_items(all_items, train_ratio, val_ratio, seed)
     clear_output_root(output_root)
     ensure_dirs(output_root, split_map.keys())
 
