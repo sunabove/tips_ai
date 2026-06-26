@@ -114,20 +114,24 @@ def resume_or_new_model(args: argparse.Namespace) -> tuple[YOLO, bool]:
 	Determine if we should resume from checkpoint or train fresh.
 	Returns: (model, is_resuming)
 	"""
-	# Check explicit resume path first
-	if args.resume_path and args.resume_path.exists():
-		print(f"Resuming from explicit checkpoint: {args.resume_path}")
-		return YOLO(str(args.resume_path)), True
-	
-	# Check for --resume flag
+	# Resume is allowed only when --resume is explicitly enabled.
 	if args.resume:
+		if args.resume_path:
+			if args.resume_path.exists():
+				print(f"Resuming from explicit checkpoint: {args.resume_path}")
+				return YOLO(str(args.resume_path)), True
+			print(f"--resume-path not found: {args.resume_path}")
+			print("Falling back to auto-discovered last checkpoint...")
+
 		last_checkpoint = find_last_checkpoint(args.project, args.name)
 		if last_checkpoint:
 			print(f"Resuming from last checkpoint: {last_checkpoint}")
 			return YOLO(str(last_checkpoint)), True
-		else:
-			print(f"--resume flag set but no checkpoint found in {args.project / args.name}")
-			print("Starting fresh training...")
+
+		print(f"--resume flag set but no checkpoint found in {args.project / args.name}")
+		print("Starting fresh training...")
+	elif args.resume_path:
+		print("--resume-path was provided but --resume is False, so starting fresh training.")
 	
 	# Start fresh
 	print(f"Starting fresh training with model: {args.model}")
