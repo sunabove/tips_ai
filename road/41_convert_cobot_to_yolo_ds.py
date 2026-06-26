@@ -175,7 +175,7 @@ def find_model_class_id_by_name(model: YOLO, class_name: str) -> int | None:
 
 def find_colormap_path(cobot_root: Path, colormap_path: Path | None) -> Path:
     """cobot_root 우선, 그 다음 명시/기본 경로에서 colormap 파일을 찾습니다."""
-    candidates: list[Path] = [cobot_root / "colormap_road.txt"]
+    candidates: list[Path] = [cobot_root / "_colormap_road.txt"]
     if colormap_path is not None:
         candidates.append(colormap_path)
     else:
