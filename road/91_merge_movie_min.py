@@ -348,7 +348,7 @@ def parse_args() -> argparse.Namespace:
 		"--clip-seconds",
 		type=float,
 		default=20.0,
-		helper="각 동영상에서 잘라낼 길이(초). 기본값: 20",
+		help="각 동영상에서 잘라낼 길이(초). 기본값: 20",
 	)
 	parser.add_argument(
 		"--progress-step-percent",
