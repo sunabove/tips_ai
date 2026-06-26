@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import signal
 from pathlib import Path
 
 try:
@@ -78,6 +79,17 @@ def parse_args() -> argparse.Namespace:
 		action="store_true",
 		help="Disable mixed precision training.",
 	)
+	parser.add_argument(
+		"--resume",
+		action="store_true",
+		help="Resume training from the last checkpoint in the run directory.",
+	)
+	parser.add_argument(
+		"--resume-path",
+		type=Path,
+		default=None,
+		help="Explicit path to checkpoint to resume from (e.g., runs/cobot-road-seg/weights/last.pt).",
+	)
 	return parser.parse_args()
 
 
@@ -89,16 +101,59 @@ def validate_paths(data_yaml: Path, model_source: str) -> None:
 		raise FileNotFoundError(f"model checkpoint not found: {model_path}")
 
 
+def find_last_checkpoint(project_dir: Path, run_name: str) -> Path | None:
+	"""Find the last.pt checkpoint in the run directory."""
+	checkpoint_path = project_dir / run_name / "weights" / "last.pt"
+	if checkpoint_path.exists():
+		return checkpoint_path
+	return None
+
+
+def resume_or_new_model(args: argparse.Namespace) -> tuple[YOLO, bool]:
+	"""
+	Determine if we should resume from checkpoint or train fresh.
+	Returns: (model, is_resuming)
+	"""
+	# Check explicit resume path first
+	if args.resume_path and args.resume_path.exists():
+		print(f"Resuming from explicit checkpoint: {args.resume_path}")
+		return YOLO(str(args.resume_path)), True
+	
+	# Check for --resume flag
+	if args.resume:
+		last_checkpoint = find_last_checkpoint(args.project, args.name)
+		if last_checkpoint:
+			print(f"Resuming from last checkpoint: {last_checkpoint}")
+			return YOLO(str(last_checkpoint)), True
+		else:
+			print(f"--resume flag set but no checkpoint found in {args.project / args.name}")
+			print("Starting fresh training...")
+	
+	# Start fresh
+	print(f"Starting fresh training with model: {args.model}")
+	return YOLO(str(args.model)), False
+
+
 def main() -> None:
 	args = parse_args()
 	validate_paths(args.data, args.model)
 
 	print("Starting YOLO segmentation training...")
 	print(f"Dataset: {args.data}")
-	print(f"Model: {args.model}")
 	print(f"Device: {args.device}")
+	
+	# Load model (fresh or resume from checkpoint)
+	model, is_resuming = resume_or_new_model(args)
+	
+	# Set up signal handler for graceful interruption
+	def signal_handler(signum, frame):
+		print("\n\nTraining interrupted by user (Ctrl-C).")
+		print(f"To resume: python {Path(__file__).name} --resume --name {args.name}")
+		print("(The last.pt checkpoint will be automatically loaded.)")
+		raise KeyboardInterrupt()
+	
+	signal.signal(signal.SIGINT, signal_handler)
 
-	model = YOLO(str(args.model))
 	results = model.train(
 		data=str(args.data),
 		epochs=args.epochs,
@@ -112,6 +167,7 @@ def main() -> None:
 		seed=args.seed,
 		cache=args.cache,
 		amp=not args.no_amp,
+		resume=is_resuming,  # Resume if we loaded from checkpoint
 	)
 
 	print("Training complete.")
