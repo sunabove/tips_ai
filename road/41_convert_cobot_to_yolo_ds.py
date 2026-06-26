@@ -24,7 +24,7 @@
 # - labels/val/ : 검증용 라벨 폴더
 # - labels/test/ : 테스트용 라벨 폴더
 
-# road/dataset/cobot_01/colormap_road.txt 파일에 정의된 클래스명에 매핑된 색상을 이용하여,
+# road/dataset/cobot_01/_colormap_road.txt 파일에 정의된 클래스명에 매핑된 색상을 이용하여,
 # 마스크된 이미지를 해당 변환 폴더에 생성합니다.
 # 마스크된 이미지의 배경색은 백색을 사용합니다.
 # 마스크 이미지의 파일명은 {class_name}_{index}_{frame_index}.png 형식으로 저장됩니다.
@@ -86,8 +86,8 @@ def default_model_path() -> Path:
 
 
 def default_colormap_path() -> Path:
-    """스크립트 기준 colormap_road.txt 경로를 반환합니다."""
-    return _SCRIPT_DIR.parent.parent / "colormap_road.txt"
+    """스크립트 기준 _colormap_road.txt 경로를 반환합니다."""
+    return _SCRIPT_DIR.parent.parent / "_colormap_road.txt"
 
 
 def class_specs_from_model(model: YOLO) -> List[ClassSpec]:
