@@ -157,7 +157,7 @@ class TrainStatViewer:
 
 		axes[1].set_xlabel(x_column)
 		plt.tight_layout()
-		output_image = run_folder / "training_progress.png"
+		output_image = Path.cwd() / f"training_progress_{run_folder.name}.png"
 		figure.savefig(output_image, dpi=150, bbox_inches="tight")
 		plt.close(figure)
 		print(f"Saved training plot: {output_image}")
