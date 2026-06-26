@@ -1,4 +1,7 @@
 from pathlib import Path
+import os
+
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -154,7 +157,10 @@ class TrainStatViewer:
 
 		axes[1].set_xlabel(x_column)
 		plt.tight_layout()
-		plt.show()
+		output_image = run_folder / "training_progress.png"
+		figure.savefig(output_image, dpi=150, bbox_inches="tight")
+		plt.close(figure)
+		print(f"Saved training plot: {output_image}")
 
 	def run(self) -> None:
 		run_folders = self.discover_run_folders()
